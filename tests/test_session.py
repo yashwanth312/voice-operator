@@ -12,12 +12,12 @@ class FakeRecorder:
 
 
 class FakeScribe:
-    def __init__(self, *a, **k): self.audio_sent = 0
+    def __init__(self, *a, **k): self.audio_sent = 0; self.committed = False
     async def __aenter__(self): return self
     async def __aexit__(self, *e): return False
     async def send_audio(self, b): self.audio_sent += 1
-    async def listen_partials(self, cb): cb("raw partial")
-    async def commit_and_collect(self, timeout=5.0): return "um hello world"
+    async def commit(self): self.committed = True
+    async def consume(self, on_partial): on_partial("raw partial"); return "um hello world"
 
 
 class FakeDucker:
@@ -76,7 +76,7 @@ async def test_empty_transcript_injects_nothing():
     overlay = Recording()
 
     class EmptyScribe(FakeScribe):
-        async def commit_and_collect(self, timeout=5.0): return ""
+        async def consume(self, on_partial): return ""
 
     async def fake_polish(text, ctx, **kw): return ""
 

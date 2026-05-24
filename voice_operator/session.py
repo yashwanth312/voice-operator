@@ -37,12 +37,18 @@ async def run_dictation_cycle(c: Components, stop_event: asyncio.Event) -> None:
     scribe_cm = c.make_scribe()
     try:
         async with scribe_cm as scribe:
-            partials_task = asyncio.create_task(scribe.listen_partials(c.overlay.set_partial))
-            pump_task = asyncio.create_task(_pump_audio(c.recorder, scribe, stop_event, c.max_seconds))
-            await pump_task
-            partials_task.cancel()
+            # ONE reader coroutine for the socket (consume); audio is sent
+            # concurrently. Two concurrent recv loops are illegal in websockets.
+            reader = asyncio.create_task(scribe.consume(c.overlay.set_partial))
+            await _pump_audio(c.recorder, scribe, stop_event, c.max_seconds)
             c.overlay.set_processing("Polishing...")
-            raw = await scribe.commit_and_collect()
+            await scribe.commit()
+            try:
+                raw = await asyncio.wait_for(reader, timeout=15.0)
+            except asyncio.TimeoutError:
+                log.warning("timed out waiting for committed transcript")
+                reader.cancel()
+                raw = ""
     except Exception:
         log.exception("STT session failed")
         c.overlay.set_error("STT unavailable")

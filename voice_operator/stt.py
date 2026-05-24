@@ -21,11 +21,13 @@ class Transcript:
 
 
 def parse_message(raw: str) -> Transcript | None:
+    # Scribe v2 Realtime tags messages with "message_type" (confirmed against the
+    # live API). Transcript text is in "text".
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return None
-    mtype = data.get("type")
+    mtype = data.get("message_type")
     if mtype == "partial_transcript":
         return Transcript(text=data.get("text", ""), is_final=False)
     if mtype in ("committed_transcript", "committed_transcript_with_timestamps"):
@@ -36,14 +38,19 @@ def parse_message(raw: str) -> Transcript | None:
 def _audio_chunk_message(pcm_bytes: bytes) -> str:
     return json.dumps(
         {
-            "type": "input_audio_chunk",
-            "audio_chunk": base64.b64encode(pcm_bytes).decode("ascii"),
+            "message_type": "input_audio_chunk",
+            "audio_base_64": base64.b64encode(pcm_bytes).decode("ascii"),
+            "sample_rate": SAMPLE_RATE,
         }
     )
 
 
 def _commit_message() -> str:
-    return json.dumps({"type": "commit"})
+    # Finalize by sending an empty audio chunk with the commit flag set (manual
+    # commit strategy). There is no separate "commit" message type.
+    return json.dumps(
+        {"message_type": "input_audio_chunk", "audio_base_64": "", "commit": True}
+    )
 
 
 class ScribeSession:
@@ -51,22 +58,19 @@ class ScribeSession:
 
     def __init__(self, api_key: str, keyterms: list[str]):
         self._api_key = api_key
+        # NOTE: keyterm biasing is not wired in v1. The live API rejects a
+        # client "session_config" message, and the correct mechanism for keyterms
+        # on the realtime socket is not yet confirmed. Kept for forward-compat;
+        # config.scribe_keyterms is currently a no-op. TODO: wire via the documented
+        # mechanism (likely a query param) once confirmed.
         self._keyterms = keyterms
         self._ws = None
 
     async def __aenter__(self) -> "ScribeSession":
+        # The session starts with sensible defaults (16 kHz PCM, manual commit).
+        # Do NOT send a session_config message — the server rejects it.
         self._ws = await websockets.connect(
             WS_URL, additional_headers={"xi-api-key": self._api_key}
-        )
-        # Configure the session (keyterm biasing, VAD off — we commit manually).
-        await self._ws.send(
-            json.dumps(
-                {
-                    "type": "session_config",
-                    "keyterms": self._keyterms,
-                    "commit_strategy": "manual",
-                }
-            )
         )
         return self
 
@@ -77,27 +81,26 @@ class ScribeSession:
     async def send_audio(self, pcm_bytes: bytes) -> None:
         await self._ws.send(_audio_chunk_message(pcm_bytes))
 
-    async def commit_and_collect(self, timeout: float = 5.0) -> str:
-        """Tell the server we're done, then drain messages until the final transcript."""
+    async def commit(self) -> None:
+        """Signal end-of-audio so the server emits the committed transcript."""
         await self._ws.send(_commit_message())
-        final_text = ""
-        try:
-            async with asyncio.timeout(timeout):
-                async for raw in self._ws:
-                    t = parse_message(raw)
-                    if t and t.is_final:
-                        final_text = t.text
-                        break
-        except asyncio.TimeoutError:
-            log.warning("timed out waiting for committed transcript")
-        return final_text
 
-    async def listen_partials(self, on_partial) -> None:
-        """Pump partial transcripts to a callback until the socket closes or is cancelled."""
+    async def consume(self, on_partial) -> str:
+        """SINGLE reader for this socket. Dispatches partial transcripts to on_partial
+        and returns the committed transcript text once it arrives.
+
+        Exactly one coroutine may read a websocket at a time (websockets forbids
+        concurrent recv), so this is the only place we read. Sending audio and the
+        commit happen concurrently on the same socket, which is allowed."""
+        final_text = ""
         try:
             async for raw in self._ws:
                 t = parse_message(raw)
-                if t and not t.is_final:
-                    on_partial(t.text)
+                if t is None:
+                    continue
+                if t.is_final:
+                    return t.text
+                on_partial(t.text)
         except (asyncio.CancelledError, websockets.ConnectionClosed):
             pass
+        return final_text
