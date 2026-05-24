@@ -6,8 +6,9 @@ from pathlib import Path
 
 import yaml
 
-_PLACEHOLDERS = {"sk_replace_me", "sk_eleven_replace_me"}
-_DEFAULT_CLEANUP_MODEL = "claude-haiku-4-5"
+_ELEVEN_PLACEHOLDERS = {"sk_replace_me", "sk_eleven_replace_me"}
+_GROQ_PLACEHOLDERS = {"gsk_replace_me"}
+_DEFAULT_CLEANUP_MODEL = "llama-3.3-70b-versatile"
 
 
 class ConfigError(Exception):
@@ -17,6 +18,7 @@ class ConfigError(Exception):
 @dataclass
 class Config:
     elevenlabs_api_key: str
+    groq_api_key: str = ""
     hotkey: str = "right_alt"
     hold_or_toggle: str = "hold"
     scribe_keyterms: list[str] = field(default_factory=list)
@@ -41,8 +43,14 @@ def load_config(path: Path | None = None) -> Config:
     value = data.get("elevenlabs_api_key")
     if not value:
         raise ConfigError("Missing required config key: elevenlabs_api_key")
-    if value in _PLACEHOLDERS:
+    if value in _ELEVEN_PLACEHOLDERS:
         raise ConfigError("Config key elevenlabs_api_key still holds a placeholder value.")
+
+    groq_key = data.get("groq_api_key") or ""
+    if not groq_key:
+        raise ConfigError("Missing required config key: groq_api_key")
+    if groq_key in _GROQ_PLACEHOLDERS:
+        raise ConfigError("Config key groq_api_key still holds a placeholder value.")
 
     keyterms = data.get("scribe_keyterms") or []
     if len(keyterms) > 100:
@@ -50,6 +58,7 @@ def load_config(path: Path | None = None) -> Config:
 
     return Config(
         elevenlabs_api_key=value,
+        groq_api_key=groq_key,
         hotkey=data.get("hotkey", "right_alt"),
         hold_or_toggle=data.get("hold_or_toggle", "hold"),
         scribe_keyterms=keyterms,

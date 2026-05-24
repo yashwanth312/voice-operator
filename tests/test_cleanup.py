@@ -4,7 +4,7 @@ import pathlib
 import pytest
 import yaml
 
-from voice_operator.cleanup import build_system_prompt, BUNDLED_PROMPT, polish
+from voice_operator.cleanup import BUNDLED_PROMPT, build_system_prompt, polish
 from voice_operator.context import AppContext
 
 
@@ -35,9 +35,10 @@ def _load_fixtures():
 @pytest.mark.integration
 @pytest.mark.parametrize("case", _load_fixtures())
 async def test_cleanup_golden(case):
-    # Guard: this must run on the Max subscription, never an API key.
-    os.environ.pop("ANTHROPIC_API_KEY", None)
-    out = await polish(case["raw"], AppContext(case["app"], ""))
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        pytest.skip("GROQ_API_KEY not set")
+    out = await polish(case["raw"], AppContext(case["app"], ""), api_key=api_key)
     for needle in case["expected_contains"]:
         assert needle in out, f"{needle!r} missing from: {out!r}"
     for bad in case["expected_excludes"]:

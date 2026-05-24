@@ -1,10 +1,16 @@
-# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your key.
-elevenlabs_api_key: "sk_replace_me"
+# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your keys.
 
-# Cleanup runs on Claude via the Agent SDK using your Max subscription login.
-# Claude Code must be installed and logged in with Max on this machine.
-# No Anthropic API key is used (the app actively strips ANTHROPIC_API_KEY at startup).
-cleanup_model: "claude-haiku-4-5"   # model used for the cleanup pass
+# ElevenLabs API key — get yours at https://elevenlabs.io (Pro plan recommended
+# for the included Scribe hours; a free account works but has strict limits).
+elevenlabs_api_key: "sk_eleven_replace_me"
+
+# Groq API key — free at https://console.groq.com
+# Used for the text-cleanup pass after transcription.
+groq_api_key: "gsk_replace_me"
+
+# Model used for the cleanup pass. llama-3.3-70b-versatile is the recommended
+# default: high quality, fast on Groq, and within the free tier limits.
+cleanup_model: "llama-3.3-70b-versatile"
 
 # Hotkey to hold while speaking. Currently only "right_alt" is supported.
 hotkey: "right_alt"
@@ -14,8 +20,6 @@ hold_or_toggle: "hold"
 
 # Up to 100 domain-specific terms to bias Scribe toward.
 scribe_keyterms:
-  - "Claude Code"
-  - "Anthropic"
   - "ElevenLabs"
 
 # Leave null to use the bundled cleanup prompt. Provide a string to override.

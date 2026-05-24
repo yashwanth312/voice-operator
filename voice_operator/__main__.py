@@ -5,14 +5,15 @@ import logging
 import os
 import sys
 import threading
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import voice_operator.cleanup as _cleanup
 from voice_operator import config as cfg_mod
 from voice_operator import hotkey, stt
 from voice_operator.audio import Recorder
 from voice_operator.audio_ducking import AudioDucker
-from voice_operator.cleanup import polish
 from voice_operator.context import current_app
 from voice_operator.injector import paste
 from voice_operator.overlay import Overlay
@@ -30,15 +31,6 @@ def _setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-def _force_subscription_auth() -> None:
-    """Strip ANTHROPIC_API_KEY so the Agent SDK uses the Max subscription (OAuth),
-    never a metered API account. Honors the user's 'no API credits' requirement."""
-    if os.environ.pop("ANTHROPIC_API_KEY", None):
-        log.warning("Removed ANTHROPIC_API_KEY from env; cleanup will use the Max subscription.")
-    # Also strip the alternate var some tooling sets.
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-
-
 def main() -> None:
     args = sys.argv[1:]
     if "--install-autostart" in args:
@@ -53,7 +45,6 @@ def main() -> None:
         return
 
     _setup_logging()
-    _force_subscription_auth()
     config = cfg_mod.load_config()
 
     overlay = Overlay()
@@ -71,7 +62,7 @@ def main() -> None:
         ducker=ducker,
         overlay=overlay,
         make_scribe=lambda: stt.ScribeSession(config.elevenlabs_api_key, config.scribe_keyterms),
-        polish=polish,
+        polish=partial(_cleanup.polish, api_key=config.groq_api_key),
         inject=paste,
         get_context=current_app,
         set_tray_state=tray.set_state,

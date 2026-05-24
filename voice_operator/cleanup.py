@@ -2,22 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import tempfile
 
-from claude_agent_sdk import query, ClaudeAgentOptions
+from groq import AsyncGroq
 
 from voice_operator.context import AppContext
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5"
-# The Agent SDK spawns the claude CLI (cold start ~3-5s + model). Generous so a
-# cold first call never falsely fails soft; fail-soft returns the raw transcript.
-TIMEOUT_SECONDS = 30.0
-
-# Neutral working dir so the spawned CLI never picks up THIS project's settings,
-# hooks, CLAUDE.md, or skills. Combined with setting_sources=[] in polish().
-_NEUTRAL_CWD = tempfile.gettempdir()
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+TIMEOUT_SECONDS = 15.0
 
 BUNDLED_PROMPT = """You are a deterministic TEXT-CLEANUP FILTER, not a conversational \
 assistant and not an agent. You never take actions, never create or schedule anything, \
@@ -55,58 +48,37 @@ def build_system_prompt(ctx: AppContext, override: str | None) -> str:
     return f"{body}\n\nActive app: {ctx.app_name}\nWindow title: {ctx.window_title}"
 
 
-def _extract_text(message) -> str:
-    """Pull text from an Agent SDK message; tolerant of block-shape differences."""
-    content = getattr(message, "content", None)
-    if not content:
-        return ""
-    parts = []
-    for block in content:
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            parts.append(text)
-    return "".join(parts)
-
-
 async def polish(
     raw_text: str,
     ctx: AppContext,
     *,
+    api_key: str,
     model: str | None = None,
     override: str | None = None,
 ) -> str:
-    """Clean a raw transcript with Claude on the Max subscription (Agent SDK).
-
-    Each call is an independent single-turn query (no conversation carryover).
-    On any failure or timeout, return raw_text unchanged (fail-soft)."""
+    """Clean a raw transcript via Groq. Fail-soft: returns raw_text on any error."""
     raw_text = raw_text.strip()
     if not raw_text:
         return ""
-    options = ClaudeAgentOptions(
-        system_prompt=build_system_prompt(ctx, override),
-        allowed_tools=[],                 # no tools -> single response, no agent loop
-        model=model or DEFAULT_MODEL,
-        permission_mode="bypassPermissions",  # fully unattended; never prompt
-        setting_sources=[],               # ignore user/project/local settings, hooks, CLAUDE.md, skills
-        cwd=_NEUTRAL_CWD,                  # don't inherit this project's context
-        max_thinking_tokens=0,            # no extended thinking; cuts latency ~5x
-    )
-    # Present the transcript as delimited DATA, not as a request to the agent. Without
-    # this the underlying CLI's agent framing makes it "respond to" the text instead of
-    # cleaning it (e.g. trying to act on "schedule a meeting"). NOTE: do NOT set
-    # max_turns=1 — the SDK raises "Reached maximum number of turns" as an error even
-    # when the model answered; relying on allowed_tools=[] yields one clean turn.
-    wrapped = f"Clean this dictation transcript. Output only the cleaned text:\n\n<<<\n{raw_text}\n>>>"
-    collected: list[str] = []
 
-    async def _run() -> None:
-        async for message in query(prompt=wrapped, options=options):
-            collected.append(_extract_text(message))
+    client = AsyncGroq(api_key=api_key)
+    wrapped = f"Clean this dictation transcript. Output only the cleaned text:\n\n<<<\n{raw_text}\n>>>"
 
     try:
-        await asyncio.wait_for(_run(), timeout=TIMEOUT_SECONDS)
-    except Exception as exc:  # fail-soft (includes asyncio.TimeoutError)
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model or DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": build_system_prompt(ctx, override)},
+                    {"role": "user", "content": wrapped},
+                ],
+                temperature=0,
+                max_tokens=2048,
+            ),
+            timeout=TIMEOUT_SECONDS,
+        )
+        cleaned = response.choices[0].message.content or ""
+        return cleaned.strip() or raw_text
+    except Exception as exc:
         log.warning("cleanup failed (%s); using raw transcript", exc)
         return raw_text
-    cleaned = "".join(collected).strip()
-    return cleaned or raw_text

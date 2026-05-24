@@ -1,53 +1,56 @@
 # Voice Operator
 
 Personal Wispr-Flow-style voice dictation for Windows. Hold **Right Alt**, speak,
-release — polished text is pasted into whatever app has focus. STT by ElevenLabs
-Scribe v2 Realtime; cleanup by Claude (Haiku) running on your **Max subscription**
-via the Claude Agent SDK — no Anthropic API key, no API charges.
+release — polished text is pasted into whatever app has focus.
+
+- **STT:** ElevenLabs Scribe v2 Realtime (WebSocket, ~150 ms latency)
+- **Cleanup:** Groq (`llama-3.3-70b-versatile`) — removes fillers, fixes punctuation,
+  resolves self-corrections, adapts tone to the active app
+- **Injection:** clipboard paste into any focused window
 
 ## Requirements
 
 - Windows 10/11
-- An ElevenLabs subscription/API key (Scribe v2 Realtime)
-- **Claude Code installed and logged in with a Max (or Pro) subscription** on this
-  machine — the cleanup pass runs through it. The app strips `ANTHROPIC_API_KEY`
-  from its environment at startup so cleanup always bills to the subscription, never
-  a metered API account.
+- [ElevenLabs](https://elevenlabs.io) API key (Pro plan recommended for included Scribe hours; free tier works with rate limits)
+- [Groq](https://console.groq.com) API key (free)
 
 ## Setup
 
 1. `uv sync`
 2. Copy `config.example.yaml` to `%APPDATA%\voice-operator\config.yaml` and fill in
-   your `elevenlabs_api_key`. (No Anthropic key needed.)
+   your `elevenlabs_api_key` and `groq_api_key`.
 3. `uv run voice-operator`
 
-A tray icon appears. Hold Right Alt to dictate. Right-click the tray icon to open
-config, open logs, or quit.
+A tray icon appears. Hold **Right Alt** to dictate. Right-click the tray icon to quit.
 
 ## Run at login (autostart)
 
 ```
 uv run voice-operator --install-autostart     # launch automatically at login (windowless)
-uv run voice-operator --uninstall-autostart    # stop launching at login
+uv run voice-operator --uninstall-autostart   # stop launching at login
 ```
 
-This places a shortcut in your Startup folder pointing at the venv's `pythonw.exe`
-(no console window). Note: it records the current venv path — if you move the project
-or recreate `.venv`, re-run `--install-autostart`.
+Places a shortcut in your Startup folder using the venv's `pythonw.exe`. If you move
+the project or recreate `.venv`, re-run `--install-autostart`.
 
 ## How it works
 
-`hotkey → mic capture → Scribe v2 Realtime (WebSocket) → Claude cleanup (Agent SDK
-on Max) → clipboard paste`. See `docs/superpowers/specs/2026-05-23-voice-operator-design.md`.
+```
+Right Alt held → mic capture → ElevenLabs Scribe v2 Realtime (WebSocket)
+               → Groq cleanup (llama-3.3-70b-versatile) → clipboard paste
+```
 
 ## Tests
 
-- Unit: `uv run pytest -m "not integration"`
-- Integration (runs live ElevenLabs + Claude-on-Max): ensure Claude Code is logged
-  in with Max and `ANTHROPIC_API_KEY` is unset, set `ELEVENLABS_API_KEY`, then
-  `uv run pytest -m integration`.
+```
+# Unit tests (no API keys needed)
+uv run pytest -m "not integration"
+
+# Integration tests (hits live ElevenLabs + Groq)
+ELEVENLABS_API_KEY=sk_... GROQ_API_KEY=gsk_... uv run pytest -m integration
+```
 
 ## Cost
 
-~$0 marginal for STT (covered by ElevenLabs subscription's included hours) and $0
-extra for cleanup (runs on your existing Max subscription).
+~$0 marginal — STT is covered by ElevenLabs Pro's included hours; cleanup runs on
+Groq's free tier (30 req/min, 6,000 req/day).
