@@ -1,0 +1,16 @@
+# Golden cases for the cleanup pass. These run only under `-m integration` and are
+# tuning aids, not CI gates. Assertions test robust invariants (filler removal, key
+# content survives) rather than exact wording, since LLM phrasing/number-format varies
+# (e.g. "four" may render as "4"). Tighten as you tune the prompt.
+- app: Slack
+  raw: "um yeah I can do the meeting at like uh three actually four works better"
+  expected_contains: ["meeting"]
+  expected_excludes: ["um ", "uh "]
+- app: Gmail
+  raw: "hi John thanks for the email I'll get back to you um by Friday"
+  expected_contains: ["Friday"]
+  expected_excludes: ["um "]
+- app: VS Code
+  raw: "rename the function get cwd to get current working directory"
+  expected_contains: ["function"]
+  expected_excludes: ["um "]

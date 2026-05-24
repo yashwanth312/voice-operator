@@ -1,0 +1,37 @@
+[project]
+name = "voice-operator"
+version = "0.1.0"
+description = "Personal Wispr-Flow-style voice dictation for Windows using ElevenLabs Scribe v2 + Groq for cleanup."
+requires-python = ">=3.11"
+dependencies = [
+    "groq>=0.9",
+    "websockets>=13",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "pynput>=1.7",
+    "pywin32>=306",
+    "pycaw>=20240210",
+    "comtypes>=1.4",
+    "pystray>=0.19",
+    "Pillow>=10",
+    "PyYAML>=6",
+]
+
+[project.scripts]
+voice-operator = "voice_operator.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: hits live services (ElevenLabs API key / Groq API key)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

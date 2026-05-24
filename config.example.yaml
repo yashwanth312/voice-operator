@@ -1,0 +1,29 @@
+# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your keys.
+
+# ElevenLabs API key — get yours at https://elevenlabs.io (Pro plan recommended
+# for the included Scribe hours; a free account works but has strict limits).
+elevenlabs_api_key: "sk_eleven_replace_me"
+
+# Groq API key — free at https://console.groq.com
+# Used for the text-cleanup pass after transcription.
+groq_api_key: "gsk_replace_me"
+
+# Model used for the cleanup pass. llama-3.3-70b-versatile is the recommended
+# default: high quality, fast on Groq, and within the free tier limits.
+cleanup_model: "llama-3.3-70b-versatile"
+
+# Hotkey to hold while speaking. Currently only "right_alt" is supported.
+hotkey: "right_alt"
+
+# "hold" = record while key is held (only supported mode in v1).
+hold_or_toggle: "hold"
+
+# Up to 100 domain-specific terms to bias Scribe toward.
+scribe_keyterms:
+  - "ElevenLabs"
+
+# Leave null to use the bundled cleanup prompt. Provide a string to override.
+cleanup_system_prompt_override: null
+
+# Auto-stop recording after this many seconds (runaway guard).
+max_recording_seconds: 60
