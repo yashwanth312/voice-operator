@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -39,6 +40,18 @@ def _force_subscription_auth() -> None:
 
 
 def main() -> None:
+    args = sys.argv[1:]
+    if "--install-autostart" in args:
+        from voice_operator import autostart
+        path = autostart.install()
+        print(f"Autostart installed - Voice Operator will launch at login.\nShortcut: {path}")
+        return
+    if "--uninstall-autostart" in args:
+        from voice_operator import autostart
+        removed = autostart.uninstall()
+        print("Autostart removed." if removed else "No autostart shortcut was installed.")
+        return
+
     _setup_logging()
     _force_subscription_auth()
     config = cfg_mod.load_config()

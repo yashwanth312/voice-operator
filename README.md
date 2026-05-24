@@ -24,6 +24,17 @@ via the Claude Agent SDK — no Anthropic API key, no API charges.
 A tray icon appears. Hold Right Alt to dictate. Right-click the tray icon to open
 config, open logs, or quit.
 
+## Run at login (autostart)
+
+```
+uv run voice-operator --install-autostart     # launch automatically at login (windowless)
+uv run voice-operator --uninstall-autostart    # stop launching at login
+```
+
+This places a shortcut in your Startup folder pointing at the venv's `pythonw.exe`
+(no console window). Note: it records the current venv path — if you move the project
+or recreate `.venv`, re-run `--install-autostart`.
+
 ## How it works
 
 `hotkey → mic capture → Scribe v2 Realtime (WebSocket) → Claude cleanup (Agent SDK
