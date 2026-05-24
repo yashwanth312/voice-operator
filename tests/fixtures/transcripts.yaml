@@ -1,0 +1,12 @@
+- app: Slack
+  raw: "um yeah I can do the meeting at like uh three actually four works better"
+  expected_contains: ["four"]
+  expected_excludes: ["um", "uh", "three o'clock", "like"]
+- app: Gmail
+  raw: "hi John thanks for the email I'll get back to you um by Friday"
+  expected_contains: ["Hi John", "Friday"]
+  expected_excludes: ["um"]
+- app: VS Code
+  raw: "rename the function get cwd to get current working directory"
+  expected_contains: ["getCwd", "getCurrentWorkingDirectory"]
+  expected_excludes: []
