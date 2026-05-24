@@ -16,7 +16,7 @@ The deliverable is a personal tool — not a product. No multi-user, no auth, no
 |---|---|
 | Scope | System-wide on Windows (works in any focused field) |
 | STT engine | ElevenLabs Scribe v2 Realtime (WebSocket, ~150 ms latency) |
-| Cleanup engine | Claude Haiku 4.5 via Anthropic SDK |
+| Cleanup engine | Claude (Haiku) via the **Claude Agent SDK on the Max subscription** — no Anthropic API key (revised 2026-05-24; see §11) |
 | Tech stack | Python daemon with system tray and floating overlay |
 | Trigger | Press-and-hold Right Alt |
 | Cleanup level | Wispr Flow parity — filler removal, punctuation, backtracking resolution, light tone adaptation by active app |
@@ -254,3 +254,16 @@ Explicitly deferred to keep this shippable:
 - **Test runner: pytest vs unittest?** Recommend pytest with pytest-asyncio.
 - **Icon assets** — need three tray icon states (idle/recording/processing) and an app icon. Can ship with simple bundled PNGs and replace later.
 - **Pre-built executable?** Consider PyInstaller in a follow-up; v1 runs via `python -m voice_operator` from a venv.
+
+## 11. Addendum (2026-05-24): cleanup runs on Max, not the Anthropic API
+
+The original §2 chose the Anthropic API for cleanup (~$1/mo). The user has a Claude **Max** subscription and wants **zero API-credit usage**, so the cleanup backend is changed to run Claude through the **Claude Agent SDK (`claude-agent-sdk`)**, which authenticates with the logged-in Claude Code session (OAuth/Max).
+
+**Why this is safe for this user:** Reported cases of headless `claude`/SDK usage silently billing API rates all involve users who *also* have a separate paid Anthropic API account that the CLI can route to. This user confirmed they have **no** separate paid API account, so there is nothing to misbill to — the SDK uses the Max subscription. As a hard guard, the app strips `ANTHROPIC_API_KEY` (and `ANTHROPIC_AUTH_TOKEN`) from its process environment at startup (`_force_subscription_auth`).
+
+**Implications:**
+- `cleanup.py` uses `claude_agent_sdk.query()` with `ClaudeAgentOptions(system_prompt=..., allowed_tools=[], max_turns=1, model="claude-haiku-4-5", permission_mode="bypassPermissions")`. No `anthropic` dependency, no prompt-caching API (not applicable to the SDK path).
+- **Runtime dependency:** Claude Code must be installed and logged in with Max on the host machine.
+- **Latency:** `query()` spawns the `claude` CLI per call (~1–2 s vs the API's ~400 ms). Acceptable for v1; a warm `ClaudeSDKClient` is a possible future optimization (needs per-request history reset).
+- **Cost (supersedes §8):** cleanup is now **$0**; total marginal cost is $0 on top of the existing ElevenLabs + Max subscriptions.
+- **Future option:** after 2026-06-15 (when Anthropic formalizes a separate Agent-SDK subscription credit), revisit; the swappable `polish()` interface means a different backend can drop in without touching the rest of the system.

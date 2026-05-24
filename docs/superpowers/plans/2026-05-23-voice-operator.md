@@ -6,7 +6,7 @@
 
 **Architecture:** Async core, sync edges. Network I/O (`stt`, `cleanup`) is async; OS/hardware glue (`hotkey`, `audio`, `injector`, `overlay`, `tray`, `audio_ducking`) runs on threads and posts events into the asyncio loop via a queue. `session.py` orchestrates one dictation cycle end-to-end.
 
-**Tech Stack:** Python 3.11+, uv (packaging), pytest + pytest-asyncio (tests), `websockets`, `anthropic`, `sounddevice`, `pynput`, `pywin32`, `pycaw`, `pystray`, `Pillow`, `tkinter` (stdlib), `PyYAML`.
+**Tech Stack:** Python 3.11+, uv (packaging), pytest + pytest-asyncio (tests), `websockets`, `claude-agent-sdk` (cleanup via Claude on the Max subscription — no Anthropic API key), `sounddevice`, `pynput`, `pywin32`, `pycaw`, `pystray`, `Pillow`, `tkinter` (stdlib), `PyYAML`. Requires Claude Code installed and logged in with a Max subscription on the host machine.
 
 **Reference:** Spec at `docs/superpowers/specs/2026-05-23-voice-operator-design.md`.
 
@@ -20,7 +20,7 @@
 | `config.example.yaml` | Template the user copies to `%APPDATA%\voice-operator\config.yaml` |
 | `voice_operator/config.py` | Load + validate YAML config into a `Config` dataclass |
 | `voice_operator/context.py` | Foreground window → `AppContext` (friendly app name + title) |
-| `voice_operator/cleanup.py` | Build cleanup prompt + call Claude Haiku 4.5 (prompt-cached, timeout-guarded) |
+| `voice_operator/cleanup.py` | Build cleanup prompt + run it through Claude via the Agent SDK on the Max subscription (timeout-guarded, fail-soft) |
 | `voice_operator/injector.py` | Clipboard save → set → Ctrl+V → restore; keystroke fallback |
 | `voice_operator/stt.py` | Async WebSocket client for Scribe v2 Realtime; yields partial/final transcripts |
 | `voice_operator/audio.py` | Mic capture (16 kHz mono PCM) with a chunk queue |
@@ -54,7 +54,7 @@ version = "0.1.0"
 description = "Personal Wispr-Flow-style voice dictation for Windows on ElevenLabs Scribe v2 + Claude Haiku."
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.40",
+    "claude-agent-sdk>=0.1.0",
     "websockets>=13",
     "sounddevice>=0.4.6",
     "numpy>=1.26",
@@ -79,7 +79,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "integration: hits live ElevenLabs/Anthropic APIs (requires keys, costs money)",
+    "integration: hits live services (ElevenLabs API key / Claude on Max via Agent SDK)",
 ]
 
 [build-system]
@@ -112,9 +112,13 @@ config.yaml
 - [ ] **Step 5: Create `config.example.yaml`**
 
 ```yaml
-# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your keys.
+# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your key.
 elevenlabs_api_key: "sk_replace_me"
-anthropic_api_key: "sk-ant-replace_me"
+
+# Cleanup runs on Claude via the Agent SDK using your Max subscription login.
+# Claude Code must be installed and logged in with Max on this machine.
+# No Anthropic API key is used (the app actively strips ANTHROPIC_API_KEY at startup).
+cleanup_model: "claude-haiku-4-5"   # model used for the cleanup pass
 
 # Hotkey to hold while speaking. Currently only "right_alt" is supported.
 hotkey: "right_alt"
@@ -140,7 +144,7 @@ max_recording_seconds: 60
 Run: `uv sync`
 Expected: creates `.venv`, installs all dependencies without error.
 
-Run: `uv run python -c "import anthropic, websockets, sounddevice, pynput, win32clipboard, pycaw, pystray, PIL, yaml; print('ok')"`
+Run: `uv run python -c "import claude_agent_sdk, websockets, sounddevice, pynput, win32clipboard, pycaw, pystray, PIL, yaml; print('ok')"`
 Expected: prints `ok`.
 
 - [ ] **Step 7: Commit**
@@ -176,17 +180,17 @@ def write(tmp_path, text):
 def test_loads_valid_config(tmp_path):
     path = write(tmp_path, """
         elevenlabs_api_key: "sk_eleven"
-        anthropic_api_key: "sk-ant-x"
         hotkey: "right_alt"
         hold_or_toggle: "hold"
         scribe_keyterms: ["Anthropic", "ElevenLabs"]
+        cleanup_model: "claude-haiku-4-5"
         cleanup_system_prompt_override: null
         max_recording_seconds: 45
     """)
     cfg = load_config(path)
     assert isinstance(cfg, Config)
     assert cfg.elevenlabs_api_key == "sk_eleven"
-    assert cfg.anthropic_api_key == "sk-ant-x"
+    assert cfg.cleanup_model == "claude-haiku-4-5"
     assert cfg.scribe_keyterms == ["Anthropic", "ElevenLabs"]
     assert cfg.max_recording_seconds == 45
     assert cfg.cleanup_system_prompt_override is None
@@ -194,7 +198,7 @@ def test_loads_valid_config(tmp_path):
 
 def test_missing_required_key_raises(tmp_path):
     path = write(tmp_path, """
-        anthropic_api_key: "sk-ant-x"
+        hotkey: "right_alt"
     """)
     with pytest.raises(ConfigError, match="elevenlabs_api_key"):
         load_config(path)
@@ -203,7 +207,6 @@ def test_missing_required_key_raises(tmp_path):
 def test_placeholder_key_raises(tmp_path):
     path = write(tmp_path, """
         elevenlabs_api_key: "sk_replace_me"
-        anthropic_api_key: "sk-ant-x"
     """)
     with pytest.raises(ConfigError, match="placeholder"):
         load_config(path)
@@ -212,12 +215,12 @@ def test_placeholder_key_raises(tmp_path):
 def test_defaults_applied(tmp_path):
     path = write(tmp_path, """
         elevenlabs_api_key: "sk_eleven"
-        anthropic_api_key: "sk-ant-x"
     """)
     cfg = load_config(path)
     assert cfg.hotkey == "right_alt"
     assert cfg.hold_or_toggle == "hold"
     assert cfg.scribe_keyterms == []
+    assert cfg.cleanup_model == "claude-haiku-4-5"
     assert cfg.max_recording_seconds == 60
 
 
@@ -225,7 +228,6 @@ def test_too_many_keyterms_raises(tmp_path):
     terms = "[" + ", ".join(f'"t{i}"' for i in range(101)) + "]"
     path = write(tmp_path, f"""
         elevenlabs_api_key: "sk_eleven"
-        anthropic_api_key: "sk-ant-x"
         scribe_keyterms: {terms}
     """)
     with pytest.raises(ConfigError, match="100"):
@@ -249,7 +251,8 @@ from pathlib import Path
 
 import yaml
 
-_PLACEHOLDERS = {"sk_replace_me", "sk-ant-replace_me", "sk_eleven_replace_me"}
+_PLACEHOLDERS = {"sk_replace_me", "sk_eleven_replace_me"}
+_DEFAULT_CLEANUP_MODEL = "claude-haiku-4-5"
 
 
 class ConfigError(Exception):
@@ -259,10 +262,10 @@ class ConfigError(Exception):
 @dataclass
 class Config:
     elevenlabs_api_key: str
-    anthropic_api_key: str
     hotkey: str = "right_alt"
     hold_or_toggle: str = "hold"
     scribe_keyterms: list[str] = field(default_factory=list)
+    cleanup_model: str = _DEFAULT_CLEANUP_MODEL
     cleanup_system_prompt_override: str | None = None
     max_recording_seconds: int = 60
 
@@ -276,27 +279,28 @@ def load_config(path: Path | None = None) -> Config:
     path = path or default_config_path()
     if not path.exists():
         raise ConfigError(
-            f"No config at {path}. Copy config.example.yaml there and fill in your keys."
+            f"No config at {path}. Copy config.example.yaml there and fill in your key."
         )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
-    for required in ("elevenlabs_api_key", "anthropic_api_key"):
-        value = data.get(required)
-        if not value:
-            raise ConfigError(f"Missing required config key: {required}")
-        if value in _PLACEHOLDERS:
-            raise ConfigError(f"Config key {required} still holds a placeholder value.")
+    # Only the ElevenLabs key is required. Cleanup uses Claude on the Max
+    # subscription via the Agent SDK, so no Anthropic API key is needed.
+    value = data.get("elevenlabs_api_key")
+    if not value:
+        raise ConfigError("Missing required config key: elevenlabs_api_key")
+    if value in _PLACEHOLDERS:
+        raise ConfigError("Config key elevenlabs_api_key still holds a placeholder value.")
 
     keyterms = data.get("scribe_keyterms") or []
     if len(keyterms) > 100:
         raise ConfigError("scribe_keyterms may contain at most 100 terms.")
 
     return Config(
-        elevenlabs_api_key=data["elevenlabs_api_key"],
-        anthropic_api_key=data["anthropic_api_key"],
+        elevenlabs_api_key=value,
         hotkey=data.get("hotkey", "right_alt"),
         hold_or_toggle=data.get("hold_or_toggle", "hold"),
         scribe_keyterms=keyterms,
+        cleanup_model=data.get("cleanup_model") or _DEFAULT_CLEANUP_MODEL,
         cleanup_system_prompt_override=data.get("cleanup_system_prompt_override"),
         max_recording_seconds=int(data.get("max_recording_seconds", 60)),
     )
@@ -449,12 +453,14 @@ git commit -m "feat: foreground app context detection"
 
 ---
 
-## Task 3: Cleanup prompt + Claude Haiku call
+## Task 3: Cleanup prompt + Claude via Agent SDK (Max subscription)
 
 **Files:**
 - Create: `voice_operator/cleanup.py`
 - Test: `tests/test_cleanup.py`
 - Create: `tests/fixtures/transcripts.yaml`
+
+> **Billing note (important):** Cleanup runs Claude through the `claude-agent-sdk`, which spawns the logged-in Claude Code CLI and bills against the user's **Max subscription** (OAuth) — *provided no `ANTHROPIC_API_KEY` is present in the environment*. The app strips that env var at startup (Task 12). The user confirmed they have no separate paid Anthropic API account, so there is nothing for the SDK to misbill to. Do NOT add `anthropic` or any `ANTHROPIC_API_KEY` usage to this module.
 
 - [ ] **Step 1: Write the failing test (pure prompt logic)**
 
@@ -498,14 +504,16 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from anthropic import AsyncAnthropic
+from claude_agent_sdk import query, ClaudeAgentOptions
 
 from voice_operator.context import AppContext
 
 log = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
-TIMEOUT_SECONDS = 1.5
+DEFAULT_MODEL = "claude-haiku-4-5"
+# The Agent SDK spawns the claude CLI; allow more headroom than a raw API call.
+# Fail-soft (return raw transcript) if cleanup exceeds this.
+TIMEOUT_SECONDS = 10.0
 
 BUNDLED_PROMPT = """You are a dictation cleanup assistant. The user spoke into a voice \
 dictation tool; you receive the raw speech-to-text transcript. Your job is to return \
@@ -540,45 +548,67 @@ def build_system_prompt(ctx: AppContext, override: str | None) -> str:
     return f"{body}\n\nActive app: {ctx.app_name}\nWindow title: {ctx.window_title}"
 
 
+def _extract_text(message) -> str:
+    """Pull text from an Agent SDK message; tolerant of block-shape differences."""
+    content = getattr(message, "content", None)
+    if not content:
+        return ""
+    parts = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
 async def polish(
     raw_text: str,
     ctx: AppContext,
     *,
-    api_key: str,
+    model: str | None = None,
     override: str | None = None,
 ) -> str:
-    """Clean a raw transcript. On any failure or timeout, return raw_text unchanged."""
+    """Clean a raw transcript with Claude on the Max subscription (Agent SDK).
+
+    Each call is an independent single-turn query (no conversation carryover).
+    On any failure or timeout, return raw_text unchanged (fail-soft)."""
     raw_text = raw_text.strip()
     if not raw_text:
         return ""
-    system = build_system_prompt(ctx, override)
-    client = AsyncAnthropic(api_key=api_key)
+    options = ClaudeAgentOptions(
+        system_prompt=build_system_prompt(ctx, override),
+        allowed_tools=[],                 # pure text in/out; no agentic behavior
+        max_turns=1,
+        model=model or DEFAULT_MODEL,
+        permission_mode="bypassPermissions",  # fully unattended; never prompt
+    )
+    collected: list[str] = []
+
+    async def _run() -> None:
+        async for message in query(prompt=raw_text, options=options):
+            collected.append(_extract_text(message))
+
     try:
-        resp = await asyncio.wait_for(
-            client.messages.create(
-                model=MODEL,
-                max_tokens=1024,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": raw_text}],
-            ),
-            timeout=TIMEOUT_SECONDS,
-        )
-        cleaned = "".join(
-            block.text for block in resp.content if block.type == "text"
-        ).strip()
-        return cleaned or raw_text
-    except (asyncio.TimeoutError, Exception) as exc:  # fail-soft
+        await asyncio.wait_for(_run(), timeout=TIMEOUT_SECONDS)
+    except Exception as exc:  # fail-soft (includes asyncio.TimeoutError)
         log.warning("cleanup failed (%s); using raw transcript", exc)
         return raw_text
-    finally:
-        await client.close()
+    cleaned = "".join(collected).strip()
+    return cleaned or raw_text
 ```
+
+> **Latency note:** `query()` spawns the `claude` CLI per call (~1–2 s typical, more on a cold first call). That is acceptable for v1. A future optimization is a warm `ClaudeSDKClient` held open for the daemon's lifetime — but it retains conversation history across calls, so it would need a per-request reset to keep each cleanup independent. Deferred.
+
+- [ ] **Step 3b: Live spike — confirm the SDK works on Max with NO API key (integration)**
+
+This de-risks the SDK option names and the Max-billing path before trusting the module. Run from a shell where Claude Code is logged in with Max:
+
+```powershell
+# Ensure no API key is visible to the child process, forcing OAuth/Max:
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+uv run python -c "import asyncio; from voice_operator.cleanup import polish; from voice_operator.context import AppContext; print(asyncio.run(polish('um so like this is a uh test... actually a real test', AppContext('Slack','general'))))"
+```
+Expected: prints a cleaned sentence (e.g. `This is a real test.`) within a few seconds, and **no** Anthropic API charge appears in any console. If `ClaudeAgentOptions` rejects `permission_mode="bypassPermissions"` or `model="claude-haiku-4-5"`, adjust to the values your installed `claude-agent-sdk` accepts (check `python -c "import claude_agent_sdk, inspect; print(inspect.signature(claude_agent_sdk.ClaudeAgentOptions))"`) and re-run. `_extract_text` is the single point to adjust if message block shapes differ.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -603,7 +633,7 @@ Expected: all 3 tests PASS.
   expected_excludes: []
 ```
 
-- [ ] **Step 6: Write the integration test (marked, hits live API)**
+- [ ] **Step 6: Write the integration test (marked, runs Claude on Max via the SDK)**
 
 ```python
 # append to tests/test_cleanup.py
@@ -622,18 +652,23 @@ def _load_fixtures():
 @pytest.mark.integration
 @pytest.mark.parametrize("case", _load_fixtures())
 async def test_cleanup_golden(case):
-    key = os.environ["ANTHROPIC_API_KEY"]
-    out = await polish(case["raw"], AppContext(case["app"], ""), api_key=key)
+    # Guard: this must run on the Max subscription, never an API key.
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    out = await polish(case["raw"], AppContext(case["app"], ""))
     for needle in case["expected_contains"]:
         assert needle in out, f"{needle!r} missing from: {out!r}"
     for bad in case["expected_excludes"]:
         assert bad not in out, f"{bad!r} should not be in: {out!r}"
 ```
 
-- [ ] **Step 7: Run the integration test against the live API**
+- [ ] **Step 7: Run the integration test on Max (no API key)**
 
-Run: `$env:ANTHROPIC_API_KEY=(your key); uv run pytest tests/test_cleanup.py -v -m integration`
-Expected: golden cases PASS. If a case fails, tune `BUNDLED_PROMPT` rules and re-run — this is the prompt-tuning loop, expected to take a few iterations.
+Run (from a shell logged into Claude Code with Max):
+```powershell
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+uv run pytest tests/test_cleanup.py -v -m integration
+```
+Expected: golden cases PASS, billed to the Max subscription (no API charge). If a case fails, tune `BUNDLED_PROMPT` rules and re-run — this is the prompt-tuning loop, expected to take a few iterations.
 
 - [ ] **Step 8: Commit**
 
@@ -1565,7 +1600,7 @@ async def test_cycle_records_cleans_and_injects(monkeypatch):
         get_context=lambda: AppContext("Slack", "general"),
         set_tray_state=lambda s: None,
         api_key_eleven="x",
-        api_key_anthropic="y",
+        cleanup_model="claude-haiku-4-5",
         prompt_override=None,
         max_seconds=60,
     )
@@ -1596,7 +1631,7 @@ async def test_empty_transcript_injects_nothing():
         inject=lambda t: injected.append(t),
         get_context=lambda: AppContext("Slack", ""),
         set_tray_state=lambda s: None,
-        api_key_eleven="x", api_key_anthropic="y",
+        api_key_eleven="x", cleanup_model="claude-haiku-4-5",
         prompt_override=None, max_seconds=60,
     )
     stop_event = asyncio.Event(); stop_event.set()
@@ -1631,12 +1666,12 @@ class Components:
     ducker: object                         # .duck(), .restore()
     overlay: object                        # .show/.set_partial/.set_processing/.set_error/.dismiss
     make_scribe: Callable[[], object]      # context-manager: send_audio/listen_partials/commit_and_collect
-    polish: Callable[..., Awaitable[str]]  # (text, ctx, *, api_key, override) -> str
+    polish: Callable[..., Awaitable[str]]  # (text, ctx, *, model, override) -> str
     inject: Callable[[str], None]
     get_context: Callable[[], AppContext]
     set_tray_state: Callable[[str], None]
     api_key_eleven: str
-    api_key_anthropic: str
+    cleanup_model: str
     prompt_override: str | None
     max_seconds: int
 
@@ -1670,7 +1705,7 @@ async def run_dictation_cycle(c: Components, stop_event: asyncio.Event) -> None:
         return
 
     cleaned = await c.polish(
-        raw, ctx, api_key=c.api_key_anthropic, override=c.prompt_override
+        raw, ctx, model=c.cleanup_model, override=c.prompt_override
     )
     if cleaned.strip():
         c.inject(cleaned)
@@ -1755,8 +1790,18 @@ def _setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
+def _force_subscription_auth() -> None:
+    """Strip ANTHROPIC_API_KEY so the Agent SDK uses the Max subscription (OAuth),
+    never a metered API account. Honors the user's 'no API credits' requirement."""
+    if os.environ.pop("ANTHROPIC_API_KEY", None):
+        log.warning("Removed ANTHROPIC_API_KEY from env; cleanup will use the Max subscription.")
+    # Also strip the alternate var some tooling sets.
+    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+
 def main() -> None:
     _setup_logging()
+    _force_subscription_auth()
     config = cfg_mod.load_config()
 
     overlay = Overlay()
@@ -1779,7 +1824,7 @@ def main() -> None:
         get_context=current_app,
         set_tray_state=tray.set_state,
         api_key_eleven=config.elevenlabs_api_key,
-        api_key_anthropic=config.anthropic_api_key,
+        cleanup_model=config.cleanup_model,
         prompt_override=config.cleanup_system_prompt_override,
         max_seconds=config.max_recording_seconds,
     )
@@ -1851,13 +1896,23 @@ git commit -m "feat: wire daemon entrypoint (tray + hotkey + async loop)"
 
 Personal Wispr-Flow-style voice dictation for Windows. Hold **Right Alt**, speak,
 release — polished text is pasted into whatever app has focus. STT by ElevenLabs
-Scribe v2 Realtime; cleanup by Claude Haiku 4.5.
+Scribe v2 Realtime; cleanup by Claude (Haiku) running on your **Max subscription**
+via the Claude Agent SDK — no Anthropic API key, no API charges.
+
+## Requirements
+
+- Windows 10/11
+- An ElevenLabs subscription/API key (Scribe v2 Realtime)
+- **Claude Code installed and logged in with a Max (or Pro) subscription** on this
+  machine — the cleanup pass runs through it. The app strips `ANTHROPIC_API_KEY`
+  from its environment at startup so cleanup always bills to the subscription, never
+  a metered API account.
 
 ## Setup
 
 1. `uv sync`
 2. Copy `config.example.yaml` to `%APPDATA%\voice-operator\config.yaml` and fill in
-   your `elevenlabs_api_key` and `anthropic_api_key`.
+   your `elevenlabs_api_key`. (No Anthropic key needed.)
 3. `uv run voice-operator`
 
 A tray icon appears. Hold Right Alt to dictate. Right-click the tray icon to open
@@ -1865,19 +1920,20 @@ config, open logs, or quit.
 
 ## How it works
 
-`hotkey → mic capture → Scribe v2 Realtime (WebSocket) → Claude Haiku cleanup →
-clipboard paste`. See `docs/superpowers/specs/2026-05-23-voice-operator-design.md`.
+`hotkey → mic capture → Scribe v2 Realtime (WebSocket) → Claude cleanup (Agent SDK
+on Max) → clipboard paste`. See `docs/superpowers/specs/2026-05-23-voice-operator-design.md`.
 
 ## Tests
 
 - Unit: `uv run pytest -m "not integration"`
-- Integration (hits live APIs, costs pennies): set `ANTHROPIC_API_KEY` /
-  `ELEVENLABS_API_KEY`, then `uv run pytest -m integration`.
+- Integration (runs live ElevenLabs + Claude-on-Max): ensure Claude Code is logged
+  in with Max and `ANTHROPIC_API_KEY` is unset, set `ELEVENLABS_API_KEY`, then
+  `uv run pytest -m integration`.
 
 ## Cost
 
-~$0 marginal for STT (covered by ElevenLabs Pro's included hours) + ~$1/month for
-Haiku cleanup at typical personal usage.
+~$0 marginal for STT (covered by ElevenLabs subscription's included hours) and $0
+extra for cleanup (runs on your existing Max subscription).
 ```
 
 - [ ] **Step 2: Commit**
@@ -1894,7 +1950,7 @@ git commit -m "docs: add README"
 **Spec coverage check:**
 - System-wide Windows injection → Task 4 (clipboard paste) ✓
 - Scribe v2 Realtime STT → Task 5 ✓
-- Claude Haiku cleanup with the 10-rule prompt → Task 3 (prompt verbatim from spec §5) ✓
+- Claude cleanup with the 10-rule prompt → Task 3 (prompt verbatim from spec §5; runs via Agent SDK on Max) ✓
 - Right-Alt press-and-hold → Task 8 ✓
 - Floating overlay (recording/processing/error states) → Task 9 ✓
 - System tray (idle/recording/processing + menu) → Task 10 ✓
@@ -1903,10 +1959,15 @@ git commit -m "docs: add README"
 - Fail-soft error matrix (STT fail, cleanup timeout→raw, empty transcript, max-seconds guard) → Tasks 3, 5, 11 ✓
 - Config with keyterms + prompt override → Task 1 ✓
 - Logging (no audio) → Task 12 `_setup_logging` ✓
+- "No API credits" requirement → Task 3 (Agent SDK, no `anthropic` dep) + Task 12 `_force_subscription_auth` ✓
 - Cost target → README + spec ✓
 
 **Deferred per spec §9 (correctly absent):** Command Mode, dictionary auto-learning, settings GUI, cross-platform, multi-language switching, VAD auto-stop.
 
-**Known schema risk:** The exact Scribe v2 Realtime WebSocket message/field names are confirmed by the Task 5 Step 5 live spike before the parser is trusted; `parse_message` is the single point of change if they differ.
+**Cleanup-backend decision (supersedes spec §2's "Anthropic API" row):** Cleanup runs Claude through `claude-agent-sdk` on the user's Max subscription, NOT the Anthropic API. Reason: the user wants zero API credit usage. The user confirmed no separate paid Anthropic API account exists, so the SDK's OAuth path bills the subscription with nothing to misbill to. Task 12 strips `ANTHROPIC_API_KEY` at startup as a hard guard. Spec §8 cost (~$1/mo Haiku) is now $0.
 
-**Type consistency:** `Components` fields in Task 11 match their usage in Task 12. `ScribeSession` (Task 5) implements the async-context-manager + `send_audio`/`listen_partials`/`commit_and_collect` interface that `session.py` and its fakes expect.
+**Known risks confirmed by live spikes before trusting code:**
+- Scribe v2 Realtime WS message/field names → Task 5 Step 5 spike; `parse_message` is the single change point.
+- Agent SDK option names (`permission_mode`, `model`), message block shapes, and the Max-billing path → Task 3 Step 3b spike; `_extract_text` / `ClaudeAgentOptions` are the change points.
+
+**Type consistency:** `Components` fields in Task 11 (now `cleanup_model: str`, no `api_key_anthropic`) match their construction in Task 12 and the test fakes. `polish(text, ctx, *, model, override)` signature is consistent across Task 3 (definition), Task 11 (call site `model=c.cleanup_model`), and the fakes (`**kw`). `ScribeSession` (Task 5) implements the async-context-manager + `send_audio`/`listen_partials`/`commit_and_collect` interface that `session.py` expects.
