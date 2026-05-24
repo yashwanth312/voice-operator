@@ -1,0 +1,25 @@
+# Copy this file to %APPDATA%\voice-operator\config.yaml and fill in your key.
+elevenlabs_api_key: "sk_replace_me"
+
+# Cleanup runs on Claude via the Agent SDK using your Max subscription login.
+# Claude Code must be installed and logged in with Max on this machine.
+# No Anthropic API key is used (the app actively strips ANTHROPIC_API_KEY at startup).
+cleanup_model: "claude-haiku-4-5"   # model used for the cleanup pass
+
+# Hotkey to hold while speaking. Currently only "right_alt" is supported.
+hotkey: "right_alt"
+
+# "hold" = record while key is held (only supported mode in v1).
+hold_or_toggle: "hold"
+
+# Up to 100 domain-specific terms to bias Scribe toward.
+scribe_keyterms:
+  - "Claude Code"
+  - "Anthropic"
+  - "ElevenLabs"
+
+# Leave null to use the bundled cleanup prompt. Provide a string to override.
+cleanup_system_prompt_override: null
+
+# Auto-stop recording after this many seconds (runaway guard).
+max_recording_seconds: 60
