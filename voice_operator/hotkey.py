@@ -29,16 +29,26 @@ class HotkeyState:
         self._on_up()
 
 
+# The physical Right Alt key reports as alt_r on US layouts and as alt_gr
+# (AltGr) on many international layouts; both are virtual-key 165 (VK_RMENU).
+# Accept either so "Right Alt" works regardless of layout.
+_RIGHT_ALT_KEYS = frozenset({keyboard.Key.alt_r, keyboard.Key.alt_gr})
+
+
+def is_right_alt(key) -> bool:
+    return key in _RIGHT_ALT_KEYS
+
+
 def listen(on_down: Callable[[], None], on_up: Callable[[], None]) -> keyboard.Listener:
     """Start a global listener for Right Alt press-and-hold. Returns the running listener."""
     state = HotkeyState(on_down, on_up)
 
     def _on_press(key):
-        if key == keyboard.Key.alt_r:
+        if is_right_alt(key):
             state.key_pressed()
 
     def _on_release(key):
-        if key == keyboard.Key.alt_r:
+        if is_right_alt(key):
             state.key_released()
 
     listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
