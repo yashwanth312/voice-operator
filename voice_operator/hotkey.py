@@ -45,12 +45,15 @@ def listen(on_down: Callable[[], None], on_up: Callable[[], None]) -> keyboard.L
 
     def _on_press(key):
         if is_right_alt(key):
+            log.info("Right Alt pressed — starting dictation")
             state.key_pressed()
 
     def _on_release(key):
         if is_right_alt(key):
+            log.info("Right Alt released — stopping dictation")
             state.key_released()
 
     listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
     listener.start()
+    log.info("Hotkey listener started successfully")
     return listener

@@ -17,9 +17,13 @@ release — polished text is pasted into whatever app has focus.
 ## Setup
 
 1. `uv sync`
-2. Copy `config.example.yaml` to `%APPDATA%\voice-operator\config.yaml` and fill in
+2. Register the pywin32 DLLs (one-time, required on fresh Windows installs):
+   ```
+   python .venv\Scripts\pywin32_postinstall.py -install
+   ```
+3. Copy `config.example.yaml` to `%APPDATA%\voice-operator\config.yaml` and fill in
    your `elevenlabs_api_key` and `groq_api_key`.
-3. `uv run voice-operator`
+4. `uv run voice-operator`
 
 A tray icon appears. Hold **Right Alt** to dictate. Right-click the tray icon to quit.
 
